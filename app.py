@@ -1,5 +1,3 @@
-
-
 import os
 import time
 from flask import Flask, request, jsonify
@@ -8,6 +6,7 @@ from PIL import Image
 import torch
 
 app = Flask(__name__)
+# This should be your model's path on Hugging Face
 MODEL_PATH = "Kuiper-sun/sariwai-rt-detr-v2" 
 
 try:
@@ -19,14 +18,10 @@ except Exception as e:
     exit()
 
 def apply_freshness_rules(eye_status, gill_status):
+    # This function now only runs if BOTH eye and gill are found.
+    # The check for "Not Found" is handled before calling it.
     hierarchy = {'fresh': 0, 'not-fresh': 1, 'old': 2}
-    eye_found = eye_status != "Not Found"
-    gill_found = gill_status != "Not Found"
-
-    # CRITICAL: Both must be found
-    if not eye_found or not gill_found:
-        return "Incomplete Detection"
-
+    
     eye_level = hierarchy.get(eye_status.lower().replace('_', '-'), -1)
     gill_level = hierarchy.get(gill_status.lower().replace('_', '-'), -1)
 
@@ -35,7 +30,7 @@ def apply_freshness_rules(eye_status, gill_status):
     if final_level == 0: return 'Fresh'
     elif final_level == 1: return 'Not Fresh'
     elif final_level == 2: return 'Old'
-    else: return 'Undetermined'
+    else: return 'Undetermined' # Fallback, should not be reached with valid labels
 
 @app.route('/healthz')
 def healthz():
@@ -65,11 +60,12 @@ def predict():
         print("            STARTING NEW PREDICTION ANALYSIS")
         print("="*50)
         
+        # This initial check remains the same. If the model sees absolutely nothing, it stops.
         if not results or not results["scores"].nelement():
              print("‼️  CRITICAL: The model detected NOTHING above the 0.4 threshold.")
              print("="*50 + "\n")
              return jsonify({
-                'status': 'No Fish Detected',
+                'status': 'No Tilapia Detected',
                 'eye_prediction': 'Not Found',
                 'gill_prediction': 'Not Found',
                 'eye_score': -1.0,
@@ -87,10 +83,10 @@ def predict():
             
             print(f"  - Detection: Label = '{label}', Confidence = {score.item():.4f}")
             
-            # Only process if the label contains 'eye' or 'gill'
             if 'eye' in label_lower:
                 if score > best_eye['score']:
                     best_eye['score'] = score.item()
+                    # Ensures we get "fresh", "not-fresh", etc.
                     best_eye['status'] = label.rsplit('_', 1)[0]
                     print(f"    ✅ Valid EYE detection kept")
             elif 'gill' in label_lower:
@@ -101,25 +97,29 @@ def predict():
             else:
                 print(f"    ❌ Ignored (not an eye or gill)")
         
-        # CRITICAL CHECK: Both eye AND gill must be detected
+        # --- MODIFICATION START ---
+        # If either the eye or gill was not found, we now return "No Tilapia Detected".
+        # This replaces the entire "Incomplete Detection" block.
         if best_eye['status'] == 'Not Found' or best_gill['status'] == 'Not Found':
-            missing = []
-            if best_eye['status'] == 'Not Found':
-                missing.append("eye")
-            if best_gill['status'] == 'Not Found':
-                missing.append("gill")
+            missing_parts = []
+            if best_eye['status'] == 'Not Found': missing_parts.append("eye")
+            if best_gill['status'] == 'Not Found': missing_parts.append("gill")
             
-            print(f"‼️  CRITICAL: Incomplete detection - Missing {' and '.join(missing)}")
+            print(f"‼️  CRITICAL: Detection failed. Missing: {' and '.join(missing_parts)}. Returning 'No Tilapia Detected'.")
             print("="*50 + "\n")
+            
             return jsonify({
-                'status': 'Incomplete Detection',
+                'status': 'No Tilapia Detected', # Simplified status
                 'eye_prediction': best_eye['status'],
                 'gill_prediction': best_gill['status'],
                 'eye_score': best_eye['score'],
                 'gill_score': best_gill['score'],
-                'message': f"Both eye and gill must be detected. Missing: {', '.join(missing)}"
+                'message': f"Detection failed. Could not find: {', '.join(missing_parts)}."
             })
+        # --- MODIFICATION END ---
 
+        # If the code reaches here, it means BOTH an eye and a gill were found.
+        # Now we can safely determine the final freshness status.
         final_status = apply_freshness_rules(best_eye['status'], best_gill['status'])
         
         end_time = time.time()
@@ -146,4 +146,5 @@ def predict():
         return jsonify({'error': f"An error occurred during prediction: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # The port needs to be 7860 for Hugging Face Spaces Gradio/Flask compatibility
+    app.run(host='0.0.0.0', port=7860)
